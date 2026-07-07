@@ -1,4 +1,4 @@
-/target/
+/daemon/target/
 /frontend/node_modules/
 /frontend/.next/
 .env

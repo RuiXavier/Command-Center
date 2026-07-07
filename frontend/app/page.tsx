@@ -6,29 +6,43 @@ export default function CommandCenter() {
   const [token, setToken] = useState<string | null>(null);
   const [authInput, setAuthInput] = useState('');
   const [status, setStatus] = useState('');
+  const [backendIp, setBackendIp] = useState('127.0.0.1');
+  const [isLoading, setIsLoading] = useState(true);
 
-  // 1. Check for token on mount (Bulletproof URL parsing)
   useEffect(() => {
-    // Using the full href is much more reliable across mobile browsers
-    const currentUrl = new URL(window.location.href);
-    const urlToken = currentUrl.searchParams.get('token');
+    try {
+      // 1. Grab IP
+      setBackendIp(window.location.hostname);
 
-    if (urlToken) {
-      console.log("Token found in URL!");
-      // Save it
-      localStorage.setItem('cc-token', urlToken);
-      setToken(urlToken);
+      // 2. Extract Token
+      const rawUrl = window.location.href;
+      let extractedToken = null;
       
-      // Clean up the URL bar so the token isn't visible in your phone's history
-      window.history.replaceState({}, document.title, currentUrl.pathname);
-    } else {
-      // Fallback: Check if we already logged in previously
-      const savedToken = localStorage.getItem('cc-token');
-      if (savedToken) setToken(savedToken);
+      if (rawUrl.includes('?token=')) {
+        extractedToken = rawUrl.split('?token=')[1].split('&')[0];
+      }
+
+      if (extractedToken) {
+        // Attempt to save and clean URL
+        localStorage.setItem('cc-token', extractedToken);
+        setToken(extractedToken);
+        
+        // Passing 'null' and an empty string is safer for strict mobile browsers
+        window.history.replaceState(null, '', window.location.pathname);
+      } else {
+        // Fallback to local storage
+        const savedToken = localStorage.getItem('cc-token');
+        if (savedToken) setToken(savedToken);
+      }
+    } catch (err: any) {
+      // If the mobile browser panics (e.g. strict local storage policies), catch it here!
+      setStatus('Init Error: ' + (err.message || 'Unknown error occurred'));
+    } finally {
+      // THIS is the magic bullet. No matter what happens, exit the loading screen.
+      setIsLoading(false);
     }
   }, []);
 
-  // 2. Handle parsing the JSON from the QR code
   const handleLogin = () => {
     try {
       const parsed = JSON.parse(authInput);
@@ -39,23 +53,22 @@ export default function CommandCenter() {
         setStatus('Invalid JSON format.');
       }
     } catch {
-      // Fallback: If you just pasted the raw token string
       localStorage.setItem('cc-token', authInput);
       setToken(authInput);
     }
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('cc-token');
+    try {
+      localStorage.removeItem('cc-token');
+    } catch (err) {
+      // Ignore storage errors on logout
+    }
     setToken(null);
   };
 
-  // 3. The universal API caller
   const sendCommand = async (endpoint: string, payload: any) => {
-    // IMPORTANT: In production, change this to your laptop's actual local IP!
-    // Example: const LAPTOP_IP = '192.168.1.50';
-    const LAPTOP_IP = '127.0.0.1'; 
-    const url = `http://${LAPTOP_IP}:4000/api/${endpoint}`;
+    const url = `http://${backendIp}:4000/api/${endpoint}`;
 
     try {
       const res = await fetch(url, {
@@ -71,14 +84,23 @@ export default function CommandCenter() {
         setStatus('Command sent successfully!');
       } else {
         setStatus('Failed to authenticate or execute.');
-        if (res.status === 401) handleLogout(); // Boot user if token is rejected
+        if (res.status === 401) handleLogout();
       }
     } catch (err) {
       setStatus('Network error. Is the Rust daemon running?');
     }
     
-    setTimeout(() => setStatus(''), 2000); // Clear status after 2s
+    setTimeout(() => setStatus(''), 2000);
   };
+
+  // --- UI: Loading State ---
+  if (isLoading) {
+    return (
+      <main className="min-h-screen bg-slate-900 flex items-center justify-center p-6 text-center">
+        <p className="text-slate-500 animate-pulse text-lg">Establishing secure connection...</p>
+      </main>
+    );
+  }
 
   // --- UI: Unauthenticated State ---
   if (!token) {
@@ -87,7 +109,11 @@ export default function CommandCenter() {
         <div className="bg-slate-800 p-8 rounded-2xl shadow-xl w-full max-w-md">
           <h1 className="text-2xl font-bold text-white mb-6 text-center">Pair Device</h1>
           <p className="text-slate-400 mb-4 text-sm text-center">
-            Paste the JSON payload from your QR code scanner below.
+            {status ? (
+              <span className="text-red-400 font-mono text-xs">{status}</span>
+            ) : (
+              "Paste the JSON payload from your QR code scanner below."
+            )}
           </p>
           <textarea 
             className="w-full bg-slate-900 text-green-400 p-4 rounded-xl border border-slate-700 focus:outline-none focus:border-blue-500 mb-4 font-mono text-sm h-32"
@@ -101,7 +127,6 @@ export default function CommandCenter() {
           >
             Authenticate
           </button>
-          {status && <p className="text-red-400 text-center mt-4">{status}</p>}
         </div>
       </main>
     );
@@ -116,7 +141,6 @@ export default function CommandCenter() {
           <button onClick={handleLogout} className="text-slate-400 hover:text-white text-sm">Disconnect</button>
         </div>
 
-        {/* Theme Controls */}
         <section className="mb-8">
           <h2 className="text-slate-400 mb-4 text-sm font-semibold uppercase tracking-wider">Appearance</h2>
           <div className="grid grid-cols-2 gap-4">
@@ -135,7 +159,6 @@ export default function CommandCenter() {
           </div>
         </section>
 
-        {/* Media Controls */}
         <section>
           <h2 className="text-slate-400 mb-4 text-sm font-semibold uppercase tracking-wider">Media</h2>
           <div className="flex justify-between bg-slate-800 p-2 rounded-2xl border border-slate-700">

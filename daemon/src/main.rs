@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -86,18 +87,23 @@ async fn main() -> Result<()> {
             println!("⚠️  Keep this secure. Anyone with this link can control your system.\n");
         }
         Commands::Serve { port } => {
-            // Load or generate the token before starting the server
             let token = get_or_create_token()?;
             let state = AppState { token };
 
+            // 1. Define the wide-open CORS policy
+            let cors = CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any);
+
+            // 2. Attach it to the router
             let app = Router::new()
                 .route("/api/theme", post(handle_theme))
                 .route("/api/media", post(handle_media))
-                // Pass our state into the middleware
                 .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
-                .with_state(state); // Provide state to the router
+                .layer(cors) // <--- Add the CORS layer here!
+                .with_state(state);
 
-            // Bind to all network interfaces (0.0.0.0) so your phone can connect!
             let addr = format!("0.0.0.0:{}", port);
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             
