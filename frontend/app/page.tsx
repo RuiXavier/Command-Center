@@ -13,6 +13,7 @@ import { SystemState, vibrate } from "../lib/utils";
 import { SmoothSlider } from "../components/SmoothSlider";
 import { WorkspaceGrid } from "../components/WorkspaceGrid";
 import { MediaSystemControls } from "../components/MediaSystemControls";
+import { TelemetryBar } from "../components/TelemetryBar";
 
 export default function CommandCenter() {
 	const [token, setToken] = useState<string | null>(null);
@@ -83,12 +84,18 @@ export default function CommandCenter() {
 	const sendCommand = useCallback(
 		async (
 			endpoint: string,
-			payload: Record<string, unknown>,
+			payload?: Record<string, unknown>,
 		): Promise<void> => {
 			if (endpoint === "workspace") {
 				wsCooldown.current = Date.now() + 1000;
 				setSysState((prev) =>
-					prev ? { ...prev, active_workspace: payload.id as number } : null,
+					prev
+						? {
+								...prev,
+								active_workspace:
+									(payload?.id as number) ?? prev.active_workspace,
+							}
+						: null,
 				);
 			}
 
@@ -169,6 +176,8 @@ export default function CommandCenter() {
 					</button>
 				</header>
 
+				<TelemetryBar sysState={sysState} sendCommand={sendCommand} />
+
 				<WorkspaceGrid sysState={sysState} sendCommand={sendCommand} />
 
 				{/* ENVIRONMENT CONTROLS */}
@@ -194,3 +203,4 @@ export default function CommandCenter() {
 		</main>
 	);
 }
+

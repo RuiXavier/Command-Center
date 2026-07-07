@@ -48,6 +48,11 @@ struct SystemState {
     brightness: u32,
     workspaces: Vec<i32>,
     active_workspace: i32,
+    // --- NEW TELEMETRY FIELDS ---
+    battery: u8,
+    wifi_ssid: String,
+    bluetooth_on: bool,
+    bt_device: String,
 }
 
 #[tokio::main]
@@ -83,6 +88,12 @@ async fn main() -> Result<()> {
                 .route("/api/brightness", post(handle_brightness))
                 .route("/api/system", post(handle_system))
                 .route("/api/workspace", post(handle_workspace))
+                .route("/api/bluetooth", post(|Json(payload): Json<SystemPayload>| async move {
+                    match control_bluetooth(&payload.action) {
+                        Ok(_) => StatusCode::OK.into_response(),
+                        Err(_) => StatusCode::BAD_REQUEST.into_response(),
+                    }
+                }))
                 .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
                 .layer(cors)
                 .with_state(state);
@@ -186,7 +197,6 @@ fn get_system_state() -> Result<SystemState> {
     let mut workspaces = Vec::new();
     if let Some(arr) = parsed_ws.as_array() {
         for w in arr {
-            // FIX: Using .get() instead of bracket indexing
             if let Some(id) = w.get("id").and_then(|v| v.as_i64()) { workspaces.push(id as i32); }
         }
     }
@@ -195,11 +205,23 @@ fn get_system_state() -> Result<SystemState> {
     // 4. Active Workspace
     let active_ws_out = String::from_utf8(Command::new("hyprctl").args(["activeworkspace", "-j"]).output()?.stdout)?;
     let parsed_active: serde_json::Value = serde_json::from_str(&active_ws_out)?;
-    
-    // FIX: Using .get() instead of bracket indexing
     let active_workspace = parsed_active.get("id").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
 
-    Ok(SystemState { volume, is_muted, brightness, workspaces, active_workspace })
+    // 5. Telemetry
+    let (battery, wifi_ssid, bluetooth_on, bt_device) = get_telemetry();
+
+    // THE FIX: Make sure every single variable is passed into the final struct
+    Ok(SystemState { 
+        volume, 
+        is_muted, 
+        brightness, 
+        workspaces, 
+        active_workspace,
+        battery, 
+        wifi_ssid, 
+        bluetooth_on, 
+        bt_device
+    })
 }
 
 fn switch_theme(theme_name: &str) -> Result<()> {
@@ -238,6 +260,36 @@ fn control_audio(action: &str, value: Option<u32>) -> Result<()> {
     Ok(())
 }
 
+fn control_bluetooth(action: &str) -> Result<()> {
+    // Support: toggle Bluetooth power
+    if action == "toggle" {
+        // Query current power state
+        let output = Command::new("bluetoothctl").arg("show").output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let powered = stdout
+            .lines()
+            .find_map(|l| {
+                let l = l.trim();
+                if l.starts_with("Powered:") {
+                    Some(l.split(':').nth(1).unwrap_or("").trim().to_lowercase())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "no".to_string());
+
+        let turn_on = match powered.as_str() {
+            "yes" | "true" => false,
+            _ => true,
+        };
+
+        let arg = if turn_on { "on" } else { "off" };
+        Command::new("bluetoothctl").arg("power").arg(arg).status()?;
+    }
+
+    Ok(())
+}
+
 fn control_brightness(action: &str, value: Option<u32>) -> Result<()> {
     if action == "set" {
         if let Some(v) = value {
@@ -246,4 +298,50 @@ fn control_brightness(action: &str, value: Option<u32>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn get_telemetry() -> (u8, String, bool, String) {
+    // Check common battery paths (BAT0, BAT1). Fallback to 100 if it's a desktop.
+    let battery = fs::read_to_string("/sys/class/power_supply/BAT0/capacity")
+        .or_else(|_| fs::read_to_string("/sys/class/power_supply/BAT1/capacity"))
+        .unwrap_or_else(|_| "100".to_string())
+        .trim()
+        .parse::<u8>()
+        .unwrap_or(100);
+
+    // Ask NetworkManager for the currently active SSID
+    let wifi_cmd = Command::new("sh")
+        .arg("-c")
+        .arg("nmcli -t -f active,ssid dev wifi | grep '^yes' | cut -d':' -f2")
+        .output();
+    
+    let wifi_ssid = match wifi_cmd {
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() { "Disconnected".to_string() } else { s }
+        },
+        Err(_) => "Unknown".to_string(),
+    };
+
+   let bt_info = Command::new("bluetoothctl").arg("show").output();
+    let bluetooth_on = match bt_info {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).contains("Powered: yes"),
+        Err(_) => false,
+    };
+
+    // Get the name of the connected device
+    let bt_devices = Command::new("sh")
+        .arg("-c")
+        .arg("bluetoothctl devices Connected | cut -d' ' -f3-")
+        .output();
+    
+    let bt_device = match bt_devices {
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() { "None".to_string() } else { s }
+        },
+        Err(_) => "None".to_string(),
+    };
+
+    (battery, wifi_ssid, bluetooth_on, bt_device)
 }
