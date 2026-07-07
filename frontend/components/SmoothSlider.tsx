@@ -1,7 +1,7 @@
 // frontend/components/SmoothSlider.tsx
 "use client";
 
-import { useState, useRef, memo } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import * as Slider from "@radix-ui/react-slider";
 
 export const SmoothSlider = memo(function SmoothSlider({
@@ -15,58 +15,96 @@ export const SmoothSlider = memo(function SmoothSlider({
 	endpoint: string;
 	icon: React.ReactNode;
 	trackColor: string;
-	sendCommand: (ep: string, payload: Record<string, unknown>) => void;
+	sendCommand: (ep: string, payload: Record<string, unknown>) => Promise<void>;
 }) {
-	// THE FIX: dragVal is temporary. When null, the slider is forced to show absolute server truth.
-	const [dragVal, setDragVal] = useState<number | null>(null);
-
-	const lastSend = useRef(0);
+	const [value, setValue] = useState([serverValue]);
+	const isInteracting = useRef(false);
 	const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-	const displayVal = dragVal !== null ? dragVal : serverValue;
+	// --- THE LATCH ENGINE ---
+	const pendingValue = useRef<number | null>(null);
+	const isSending = useRef(false);
 
-	const handleChange = (values: number[]) => {
-		const val = values[0];
-		setDragVal(val);
-
-		if (timeoutRef.current) clearTimeout(timeoutRef.current);
-
-		const now = Date.now();
-		if (now - lastSend.current > 300) {
-			sendCommand(endpoint, { action: "set", value: val });
-			lastSend.current = now;
+	useEffect(() => {
+		if (!isInteracting.current) {
+			setValue([serverValue]);
 		}
+	}, [serverValue]);
+
+	useEffect(() => {
+		return () => {
+			if (timeoutRef.current) clearTimeout(timeoutRef.current);
+		};
+	}, []);
+
+	const lockSync = () => {
+		isInteracting.current = true;
+		if (timeoutRef.current) clearTimeout(timeoutRef.current);
 	};
 
-	const handleCommit = (values: number[]) => {
-		const val = values[0];
-		setDragVal(val);
-		sendCommand(endpoint, { action: "set", value: val });
-
-		// 1.5 seconds after letting go, destroy the local state.
-		// This forces the UI to perfectly sync with the laptop's actual volume.
+	const unlockSync = () => {
 		if (timeoutRef.current) clearTimeout(timeoutRef.current);
 		timeoutRef.current = setTimeout(() => {
-			setDragVal(null);
+			isInteracting.current = false;
 		}, 1500);
 	};
 
+	// This guarantees we NEVER send overlapping commands to Linux!
+	const triggerSend = async () => {
+		if (isSending.current || pendingValue.current === null) return;
+
+		isSending.current = true;
+
+		// Keep sending until the queue is completely empty
+		while (pendingValue.current !== null) {
+			const valToSend = pendingValue.current;
+			pendingValue.current = null; // Clear the queue BEFORE sending
+
+			// Await the network request so Linux can process it sequentially
+			await sendCommand(endpoint, { action: "set", value: valToSend });
+		}
+
+		isSending.current = false;
+	};
+
+	const handleValueChange = (newValues: number[]) => {
+		lockSync();
+		setValue(newValues);
+
+		// Queue the latest value and kickstart the engine
+		pendingValue.current = newValues[0];
+		triggerSend();
+	};
+
+	const handleValueCommit = (newValues: number[]) => {
+		setValue(newValues);
+
+		// Guarantee the absolute final value is queued and sent
+		pendingValue.current = newValues[0];
+		triggerSend();
+
+		unlockSync();
+	};
+
 	return (
-		<div>
+		<div className="w-full">
 			<div className="flex justify-between items-center mb-4">
 				{icon}
-				<span className="text-sm font-bold text-slate-500">{displayVal}%</span>
+				<span className="text-sm font-bold text-slate-400 tabular-nums">
+					{value[0]}%
+				</span>
 			</div>
 			<Slider.Root
-				className="relative flex items-center select-none touch-none w-full h-12"
-				value={[displayVal]}
+				className="relative flex w-full touch-none select-none items-center"
+				value={value}
 				max={100}
 				step={1}
-				onValueChange={handleChange}
-				onValueCommit={handleCommit}>
-				<Slider.Track className="bg-black/50 relative grow rounded-2xl h-full overflow-hidden shadow-inner cursor-pointer">
+				onValueChange={handleValueChange}
+				onValueCommit={handleValueCommit}>
+				<Slider.Track className="relative h-12 w-full grow overflow-hidden rounded-2xl bg-white/10 shadow-inner">
 					<Slider.Range className={`absolute h-full ${trackColor}`} />
 				</Slider.Track>
+				<Slider.Thumb className="hidden" />
 			</Slider.Root>
 		</div>
 	);

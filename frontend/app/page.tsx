@@ -1,7 +1,7 @@
 // frontend/app/page.tsx
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
 	Volume2,
 	VolumeX,
@@ -18,7 +18,6 @@ export default function CommandCenter() {
 	const [token, setToken] = useState<string | null>(null);
 	const [sysState, setSysState] = useState<SystemState | null>(null);
 
-	// Cooldown so workspace buttons don't rubberband during network latency
 	const wsCooldown = useRef(0);
 
 	useEffect(() => {
@@ -50,6 +49,7 @@ export default function CommandCenter() {
 			const ip = window.location.hostname;
 			const res = await fetch(`http://${ip}:4000/api/state`, {
 				headers: { Authorization: `Bearer ${token}` },
+				cache: "no-store",
 			});
 			if (res.ok) {
 				const data = await res.json();
@@ -81,8 +81,10 @@ export default function CommandCenter() {
 	}, []);
 
 	const sendCommand = useCallback(
-		async (endpoint: string, payload: Record<string, unknown>) => {
-			// If it's a workspace command, instantly update optimistic UI and block server override for 1s
+		async (
+			endpoint: string,
+			payload: Record<string, unknown>,
+		): Promise<void> => {
 			if (endpoint === "workspace") {
 				wsCooldown.current = Date.now() + 1000;
 				setSysState((prev) =>
@@ -108,11 +110,34 @@ export default function CommandCenter() {
 		[token, handleLogout],
 	);
 
-	if (!token) {
+	const volumeIcon = useMemo(
+		() => (
+			<button
+				onClick={() => {
+					vibrate();
+					sendCommand("audio", { action: "mute" });
+				}}
+				className={`p-2 rounded-full transition-colors ${sysState?.is_muted ? "bg-red-500/20 text-red-400" : "text-slate-400"}`}>
+				{sysState?.is_muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+			</button>
+		),
+		[sysState?.is_muted, sendCommand],
+	);
+
+	const brightnessIcon = useMemo(
+		() => (
+			<div className="p-2 text-slate-400">
+				<Sun size={20} />
+			</div>
+		),
+		[],
+	);
+
+	if (!token || !sysState) {
 		return (
 			<main className="min-h-screen bg-black flex items-center justify-center p-6">
 				<p className="text-slate-500 animate-pulse font-medium">
-					Waiting for Connection...
+					Connecting to Command Center...
 				</p>
 			</main>
 		);
@@ -149,35 +174,18 @@ export default function CommandCenter() {
 				{/* ENVIRONMENT CONTROLS */}
 				<section className="bg-white/5 backdrop-blur-2xl p-6 rounded-3xl border border-white/10 shadow-2xl space-y-8">
 					<SmoothSlider
-						serverValue={sysState?.volume || 0}
+						serverValue={sysState.volume}
 						endpoint="audio"
 						trackColor="bg-white"
 						sendCommand={sendCommand}
-						icon={
-							<button
-								onClick={() => {
-									vibrate();
-									sendCommand("audio", { action: "mute" });
-								}}
-								className={`p-2 rounded-full transition-colors ${sysState?.is_muted ? "bg-red-500/20 text-red-400" : "text-slate-400"}`}>
-								{sysState?.is_muted ? (
-									<VolumeX size={20} />
-								) : (
-									<Volume2 size={20} />
-								)}
-							</button>
-						}
+						icon={volumeIcon}
 					/>
 					<SmoothSlider
-						serverValue={sysState?.brightness || 0}
+						serverValue={sysState.brightness}
 						endpoint="brightness"
 						trackColor="bg-yellow-400"
 						sendCommand={sendCommand}
-						icon={
-							<div className="p-2 text-slate-400">
-								<Sun size={20} />
-							</div>
-						}
+						icon={brightnessIcon}
 					/>
 				</section>
 

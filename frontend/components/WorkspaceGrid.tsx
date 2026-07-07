@@ -25,7 +25,7 @@ export function WorkspaceGrid({
 					<button
 						key={ws}
 						onClick={() => handleSwitch(ws)}
-						className={`min-w-[56px] h-14 rounded-2xl font-bold text-lg transition-all active:scale-90 flex items-center justify-center ${
+						className={`min-w-14 h-14 rounded-2xl font-bold text-lg transition-all active:scale-90 flex items-center justify-center ${
 							sysState.active_workspace === ws
 								? "bg-blue-500 text-white shadow-[0_0_20px_rgba(59,130,246,0.4)]"
 								: "bg-white/5 text-slate-400 hover:bg-white/10"
@@ -40,3 +40,4 @@ export function WorkspaceGrid({
 		</section>
 	);
 }
+
