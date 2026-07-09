@@ -1,12 +1,22 @@
-// frontend/components/MediaSystemControls.tsx
 "use client";
 
-import { vibrate } from "../lib/utils";
-import { SkipBack, Play, SkipForward, Moon, Sun, Lock } from "lucide-react";
+import { vibrate, SystemState } from "../lib/utils";
+import {
+	SkipBack,
+	Play,
+	SkipForward,
+	Moon,
+	Sun,
+	Lock,
+	Bluetooth,
+	BluetoothOff,
+} from "lucide-react";
 
 export function MediaSystemControls({
+	sysState,
 	sendCommand,
 }: {
+	sysState: SystemState;
 	sendCommand: (ep: string, payload: Record<string, unknown>) => void;
 }) {
 	return (
@@ -49,30 +59,53 @@ export function MediaSystemControls({
 				<h2 className="text-slate-400 mb-3 text-xs font-bold uppercase tracking-widest text-center">
 					System
 				</h2>
+
 				<div className="grid grid-cols-2 gap-2 mb-2">
 					<button
 						onClick={() => {
 							vibrate();
 							sendCommand("theme", { name: "dark" });
 						}}
-						className="bg-slate-800 text-white h-12 rounded-xl flex items-center justify-center active:scale-90 transition-all shadow-inner">
-						<Moon size={18} />
+						className="bg-slate-800 text-white h-10 rounded-xl flex items-center justify-center active:scale-90 transition-all shadow-inner">
+						<Moon size={16} />
 					</button>
 					<button
 						onClick={() => {
 							vibrate();
 							sendCommand("theme", { name: "light" });
 						}}
-						className="bg-slate-200 text-slate-900 h-12 rounded-xl flex items-center justify-center active:scale-90 transition-all shadow-inner">
-						<Sun size={18} />
+						className="bg-slate-200 text-slate-900 h-10 rounded-xl flex items-center justify-center active:scale-90 transition-all shadow-inner">
+						<Sun size={16} />
 					</button>
 				</div>
+
+				{/* NEW: Prominent Bluetooth Button */}
+				<button
+					onClick={() => {
+						vibrate(40);
+						sendCommand("bluetooth", { action: "toggle" });
+					}}
+					className={`mb-2 w-full h-10 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95 border ${
+						sysState.bluetooth_on
+							? "bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20"
+							: "bg-black/20 text-slate-400 border-white/5 hover:bg-black/40"
+					}`}>
+					{sysState.bluetooth_on ? (
+						<Bluetooth size={14} />
+					) : (
+						<BluetoothOff size={14} />
+					)}
+					<span className="truncate max-w-[100px]">
+						{sysState.bluetooth_on ? sysState.bt_device : "Bluetooth Off"}
+					</span>
+				</button>
+
 				<button
 					onClick={() => {
 						vibrate([50, 50, 50]);
 						sendCommand("system", { action: "lock" });
 					}}
-					className="w-full bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 h-12 rounded-xl text-xs font-bold uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-2">
+					className="w-full bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 h-10 rounded-xl text-xs font-bold uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-2">
 					<Lock size={14} /> Lock
 				</button>
 			</section>
