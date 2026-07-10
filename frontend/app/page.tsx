@@ -251,12 +251,6 @@ export default function CommandCenter() {
 								/>
 							);
 						case "slider":
-							const colorMap: Record<string, string> = {
-								"bg-white": "bg-white",
-								"bg-yellow-400": "bg-yellow-400",
-								"bg-blue-400": "bg-blue-400",
-								"bg-emerald-400": "bg-emerald-400",
-							};
 							return (
 								<section
 									key={index}
@@ -271,8 +265,8 @@ export default function CommandCenter() {
 												: sysState.brightness
 										}
 										endpoint={module.endpoint}
-										// Use the dictionary to safely map the TOML string to the Tailwind class
-										trackColor={colorMap[module.color] || "bg-white"}
+										// Pass the raw string from TOML directly!
+										trackColor={module.color}
 										sendCommand={sendCommand}
 										icon={
 											module.endpoint === "audio" ? volumeIcon : brightnessIcon

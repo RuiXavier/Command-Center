@@ -1,4 +1,3 @@
-// frontend/components/SmoothSlider.tsx
 "use client";
 
 import { useState, useRef, useEffect, memo } from "react";
@@ -21,7 +20,6 @@ export const SmoothSlider = memo(function SmoothSlider({
 	const isInteracting = useRef(false);
 	const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-	// --- THE LATCH ENGINE ---
 	const pendingValue = useRef<number | null>(null);
 	const isSending = useRef(false);
 
@@ -49,18 +47,14 @@ export const SmoothSlider = memo(function SmoothSlider({
 		}, 1500);
 	};
 
-	// This guarantees we NEVER send overlapping commands to Linux!
 	const triggerSend = async () => {
 		if (isSending.current || pendingValue.current === null) return;
 
 		isSending.current = true;
 
-		// Keep sending until the queue is completely empty
 		while (pendingValue.current !== null) {
 			const valToSend = pendingValue.current;
-			pendingValue.current = null; // Clear the queue BEFORE sending
-
-			// Await the network request so Linux can process it sequentially
+			pendingValue.current = null;
 			await sendCommand(endpoint, { action: "set", value: valToSend });
 		}
 
@@ -70,21 +64,21 @@ export const SmoothSlider = memo(function SmoothSlider({
 	const handleValueChange = (newValues: number[]) => {
 		lockSync();
 		setValue(newValues);
-
-		// Queue the latest value and kickstart the engine
 		pendingValue.current = newValues[0];
 		triggerSend();
 	};
 
 	const handleValueCommit = (newValues: number[]) => {
 		setValue(newValues);
-
-		// Guarantee the absolute final value is queued and sent
 		pendingValue.current = newValues[0];
 		triggerSend();
-
 		unlockSync();
 	};
+
+	// --- THE FIX ---
+	// Check if the TOML string is a Tailwind class (starts with bg-)
+	// or a native Hex Code (like #eab308)
+	const isTailwind = trackColor?.startsWith("bg-");
 
 	return (
 		<div className="w-full">
@@ -102,7 +96,11 @@ export const SmoothSlider = memo(function SmoothSlider({
 				onValueChange={handleValueChange}
 				onValueCommit={handleValueCommit}>
 				<Slider.Track className="relative h-12 w-full grow overflow-hidden rounded-2xl bg-white/10 shadow-inner">
-					<Slider.Range className={`absolute h-full ${trackColor}`} />
+					{/* NATIVE COLOR INJECTION */}
+					<Slider.Range
+						className={`absolute h-full ${isTailwind ? trackColor : ""}`}
+						style={!isTailwind ? { backgroundColor: trackColor } : {}}
+					/>
 				</Slider.Track>
 				<Slider.Thumb className="hidden" />
 			</Slider.Root>
