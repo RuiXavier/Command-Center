@@ -16,6 +16,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Parser)]
 struct Cli {
@@ -148,6 +149,17 @@ async fn main() -> Result<()> {
         Commands::Serve { port } => {
             let token = generate_new_token()?;
             
+            // --- NEW: Auto-Pairing ---
+            // Automatically print the QR code so you don't need a second terminal!
+            if let Ok(my_local_ip) = local_ip_address::local_ip() {
+                let app_url = format!("http://{}:{}/?token={}", my_local_ip, port, token);
+                println!("\n📱 Scan this QR code to instantly connect:\n");
+                let _ = qr2term::print_qr(&app_url);
+                println!("\n🔗 Fallback URL: {}\n", app_url);
+            } else {
+                println!("\n⚠️ Could not determine local IP for auto-pairing.");
+            }
+            
             // --- THE DBUS EAVESDROPPER ENGINE ---
             let notifications = Arc::new(Mutex::new(Vec::new()));
             let notifs_clone = notifications.clone();
@@ -218,6 +230,7 @@ async fn main() -> Result<()> {
 
             let app = Router::new()
                 .route("/api/state", get(handle_get_state))
+                .route("/api/layout", get(handle_get_layout))
                 .route("/api/theme", post(handle_theme))
                 .route("/api/media", post(handle_media))
                 .route("/api/audio", post(handle_audio))
@@ -225,10 +238,14 @@ async fn main() -> Result<()> {
                 .route("/api/system", post(handle_system))
                 .route("/api/workspace", post(handle_workspace))
                 .route("/api/bluetooth", post(handle_bluetooth))
-                .route("/api/notifications", post(handle_notifications)) // NEW ROUTE
-                .route("/api/layout", get(handle_get_layout))
+                .route("/api/notifications", post(handle_notifications))
                 .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
                 .layer(cors)
+                // NEW: Serve the Next.js static export
+                .fallback_service(
+                    ServeDir::new("../frontend/out")
+                        .fallback(ServeFile::new("../frontend/out/index.html"))
+                )
                 .with_state(state);
 
             let addr = format!("0.0.0.0:{}", port);
