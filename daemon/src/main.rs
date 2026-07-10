@@ -1,22 +1,27 @@
+mod handlers;
+mod models;
+mod system;
+
 use anyhow::{Context, Result};
 use axum::{
     extract::{Request, State},
-    http::{header, StatusCode, Method},
+    http::{header, Method, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{Response},
     routing::{get, post},
-    Json, Router,
+    Router,
 };
 use clap::{Parser, Subcommand};
 use rand::{distr::Alphanumeric, RngExt};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tower_http::cors::{Any, CorsLayer};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
+
+use handlers::*;
+use models::{AppState, AuthConfig, Notification};
 
 #[derive(Parser)]
 struct Cli {
@@ -26,132 +31,17 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Theme { name: String },
-    Media { action: String },
-    Serve { #[arg(short, long, default_value_t = 4000)] port: u16 },
+    Theme {
+        name: String,
+    },
+    Media {
+        action: String,
+    },
+    Serve {
+        #[arg(short, long, default_value_t = 4000)]
+        port: u16,
+    },
     Pair,
-}
-
-
-
-// --- NEW: Added Notifications Array to AppState ---
-#[derive(Clone)] 
-struct AppState { 
-    token: String,
-    notifications: Arc<Mutex<Vec<Notification>>>,
-}
-#[derive(Serialize, Deserialize)] struct AuthConfig { token: String }
-
-#[derive(Deserialize)] struct ThemePayload { name: String }
-#[derive(Deserialize)] struct MediaPayload { action: String }
-#[derive(Deserialize)] struct AudioPayload { action: String, value: Option<u32> }
-#[derive(Deserialize)] struct BrightnessPayload { action: String, value: Option<u32> }
-#[derive(Deserialize)] struct SystemPayload { action: String }
-#[derive(Deserialize)] struct WorkspacePayload { id: i32 }
-#[derive(Deserialize)] struct NotificationPayload { action: String, id: Option<String> }
-
-// --- State Response ---
-#[derive(Serialize, Clone)]
-struct Notification {
-    id: String,
-    app_name: String,
-    summary: String,
-    body: String,
-}
-
-#[derive(Serialize)]
-struct SystemState {
-    volume: u32,
-    is_muted: bool,
-    brightness: u32,
-    workspaces: Vec<i32>,
-    active_workspace: i32,
-    battery: u8,
-    wifi_ssid: String,
-    bluetooth_on: bool,
-    bt_device: String,
-    notifications: Vec<Notification>, // Sent to React
-}
-
-// In your ModuleConfig enum, add the AppLauncher:
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ModuleConfig {
-    Telemetry {},
-    Notifications {},
-    Workspaces {},
-    MediaSystem {},
-    Slider { endpoint: String, label: String, color: String },
-    // NEW: App Launcher
-    AppLauncher { apps: Vec<AppShortcut> }, 
-}
-
-// Add this struct right below it to define individual apps
-#[derive(Serialize, Deserialize, Clone)]
-struct AppShortcut {
-    name: String,
-    command: String,
-    icon: String, // e.g., "terminal", "browser", "code"
-}
-
-// Add this payload struct near your others
-#[derive(Deserialize)] 
-struct ExecutePayload { command: String }
-
-#[derive(Serialize, Deserialize, Clone)]
-struct GeneralConfig {
-    theme: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct AppConfig {
-    general: GeneralConfig,
-    layout: Vec<ModuleConfig>,
-}
-
-#[derive(Serialize)]
-struct SystemApp {
-    name: String,
-    command: String,
-    icon: String,
-}
-
-// Read or generate the default config.toml
-fn get_or_create_config() -> Result<AppConfig> {
-    let mut path = dirs::config_dir().context("Could not find config dir")?;
-    path.push("command-center");
-    fs::create_dir_all(&path)?;
-    path.push("config.toml");
-
-    if path.exists() {
-        let contents = fs::read_to_string(&path)?;
-        let config: AppConfig = toml::from_str(&contents)?;
-        Ok(config)
-    } else {
-        // Generate the default Arch Linux layout
-        let default_config = AppConfig {
-            general: GeneralConfig { theme: "glass".to_string() },
-            layout: vec![
-                ModuleConfig::Telemetry {},
-                ModuleConfig::Notifications {},
-                ModuleConfig::Workspaces {},
-                ModuleConfig::Slider { 
-                    endpoint: "audio".to_string(), 
-                    label: "Master Volume".to_string(), 
-                    color: "bg-white".to_string() 
-                },
-                ModuleConfig::Slider { 
-                    endpoint: "brightness".to_string(), 
-                    label: "Display Brightness".to_string(), 
-                    color: "bg-yellow-400".to_string() 
-                },
-                ModuleConfig::MediaSystem {},
-            ],
-        };
-        let toml_string = toml::to_string(&default_config)?;
-        fs::write(&path, toml_string)?;
-        Ok(default_config)
-    }
 }
 
 #[tokio::main]
@@ -159,8 +49,12 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Theme { name } => { switch_theme(name)?; }
-        Commands::Media { action } => { control_media(action)?; }
+        Commands::Theme { name } => {
+            system::switch_theme(name)?;
+        }
+        Commands::Media { action } => {
+            system::control_media(action)?;
+        }
         Commands::Pair => {
             let token = get_current_token().context("⚠️ Daemon is not running!")?;
             let my_local_ip = local_ip_address::local_ip().context("Failed to get local IP.")?;
@@ -171,9 +65,7 @@ async fn main() -> Result<()> {
         }
         Commands::Serve { port } => {
             let token = generate_new_token()?;
-            
-            // --- NEW: Auto-Pairing ---
-            // Automatically print the QR code so you don't need a second terminal!
+
             if let Ok(my_local_ip) = local_ip_address::local_ip() {
                 let app_url = format!("http://{}:{}/?token={}", my_local_ip, port, token);
                 println!("\n📱 Scan this QR code to instantly connect:\n");
@@ -182,11 +74,10 @@ async fn main() -> Result<()> {
             } else {
                 println!("\n⚠️ Could not determine local IP for auto-pairing.");
             }
-            
-            // --- THE DBUS EAVESDROPPER ENGINE ---
+
             let notifications = Arc::new(Mutex::new(Vec::new()));
             let notifs_clone = notifications.clone();
-            
+
             tokio::spawn(async move {
                 let mut child = tokio::process::Command::new("dbus-monitor")
                     .arg("interface='org.freedesktop.Notifications',member='Notify'")
@@ -211,47 +102,62 @@ async fn main() -> Result<()> {
                         current_body.clear();
                     } else if line.starts_with("string \"") {
                         string_count += 1;
-                        
+
                         let content = if let (Some(start), Some(end)) = (line.find('"'), line.rfind('"')) {
                             if start != end {
-                                // Strip HTML formatting some apps send, and format newlines
-                                line[start + 1..end].replace("\\n", "\n")
-                                    .replace("<b>", "").replace("</b>", "")
-                                    .replace("<i>", "").replace("</i>", "")
-                            } else { String::new() }
-                        } else { String::new() };
+                                line[start + 1..end]
+                                    .replace("\\n", "\n")
+                                    .replace("<b>", "")
+                                    .replace("</b>", "")
+                                    .replace("<i>", "")
+                                    .replace("</i>", "")
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
 
                         match string_count {
                             1 => current_app = content,
                             3 => current_summary = content,
                             4 => {
                                 current_body = content;
-                                let id: String = rand::rng().sample_iter(&Alphanumeric).take(8).map(char::from).collect();
+                                let id: String = rand::rng()
+                                    .sample_iter(&Alphanumeric)
+                                    .take(8)
+                                    .map(char::from)
+                                    .collect();
                                 let mut hist = notifs_clone.lock().unwrap();
-                                // Add to top of feed
-                                hist.insert(0, Notification {
-                                    id,
-                                    app_name: current_app.clone(),
-                                    summary: current_summary.clone(),
-                                    body: current_body.clone(),
-                                });
-                                // Keep memory clean, only store last 20
-                                if hist.len() > 20 { hist.pop(); }
-                            },
+                                hist.insert(
+                                    0,
+                                    Notification {
+                                        id,
+                                        app_name: current_app.clone(),
+                                        summary: current_summary.clone(),
+                                        body: current_body.clone(),
+                                    },
+                                );
+                                if hist.len() > 20 {
+                                    hist.pop();
+                                }
+                            }
                             _ => {}
                         }
                     }
                 }
             });
 
-            let state = AppState { token, notifications };
+            let state = AppState {
+                token,
+                notifications,
+            };
 
             let cors = CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods(vec![Method::GET, Method::POST])
                 .allow_headers(Any);
 
-            // 1. Lock down all control routes with the security token
             let auth_routes = Router::new()
                 .route("/api/state", get(handle_get_state))
                 .route("/api/layout", get(handle_get_layout))
@@ -264,9 +170,11 @@ async fn main() -> Result<()> {
                 .route("/api/bluetooth", post(handle_bluetooth))
                 .route("/api/notifications", post(handle_notifications))
                 .route("/api/execute", post(handle_execute))
-                .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    auth_middleware,
+                ));
 
-            // 2. Make the images and app list public to the local network so the browser can load them
             let app = Router::new()
                 .merge(auth_routes)
                 .route("/api/apps", get(handle_get_apps))
@@ -274,9 +182,10 @@ async fn main() -> Result<()> {
                 .layer(cors)
                 .fallback_service(
                     ServeDir::new("../frontend/out")
-                        .fallback(ServeFile::new("../frontend/out/index.html"))
+                        .fallback(ServeFile::new("../frontend/out/index.html")),
                 )
                 .with_state(state);
+
             let addr = format!("0.0.0.0:{}", port);
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             println!("🚀 Command Center Daemon running on http://{}", addr);
@@ -286,14 +195,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// --- Security ---
 fn generate_new_token() -> Result<String> {
     let mut path = dirs::config_dir().context("Could not find config directory")?;
     path.push("command-center");
     fs::create_dir_all(&path)?;
     path.push("auth.json");
-    let new_token: String = rand::rng().sample_iter(&Alphanumeric).take(64).map(char::from).collect();
-    let auth = AuthConfig { token: new_token.clone() };
+    let new_token: String = rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(64)
+        .map(char::from)
+        .collect();
+    let auth = AuthConfig {
+        token: new_token.clone(),
+    };
     fs::write(&path, serde_json::to_string_pretty(&auth)?)?;
     let mut perms = fs::metadata(&path)?.permissions();
     perms.set_mode(0o600);
@@ -308,313 +222,21 @@ fn get_current_token() -> Result<String> {
     if path.exists() {
         let auth: AuthConfig = serde_json::from_str(&fs::read_to_string(&path)?)?;
         Ok(auth.token)
-    } else { anyhow::bail!("auth.json not found."); }
+    } else {
+        anyhow::bail!("auth.json not found.");
+    }
 }
 
-async fn auth_middleware(State(state): State<AppState>, req: Request, next: Next) -> Result<Response, StatusCode> {
+async fn auth_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
     let expected_header = format!("Bearer {}", state.token);
     match req.headers().get(header::AUTHORIZATION) {
-        Some(value) if value.as_bytes() == expected_header.as_bytes() => Ok(next.run(req).await),
-        _ => Err(StatusCode::UNAUTHORIZED)
-    }
-}
-
-// --- Route Handlers ---
-async fn handle_get_state(State(state): State<AppState>) -> impl IntoResponse {
-    let notifs = state.notifications.lock().unwrap().clone();
-    match get_system_state(notifs) {
-        Ok(sys_state) => (StatusCode::OK, Json(sys_state)).into_response(),
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read system state").into_response(),
-    }
-}
-async fn handle_theme(Json(payload): Json<ThemePayload>) -> impl IntoResponse {
-    match switch_theme(&payload.name) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_media(Json(payload): Json<MediaPayload>) -> impl IntoResponse {
-    match control_media(&payload.action) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_audio(Json(payload): Json<AudioPayload>) -> impl IntoResponse {
-    match control_audio(&payload.action, payload.value) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_brightness(Json(payload): Json<BrightnessPayload>) -> impl IntoResponse {
-    match control_brightness(&payload.action, payload.value) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_system(Json(payload): Json<SystemPayload>) -> impl IntoResponse {
-    match control_system(&payload.action) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_workspace(Json(payload): Json<WorkspacePayload>) -> impl IntoResponse {
-    match control_workspace(payload.id) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_bluetooth(Json(payload): Json<SystemPayload>) -> impl IntoResponse {
-    match control_bluetooth(&payload.action) {
-        Ok(_) => StatusCode::OK.into_response(), Err(_) => StatusCode::BAD_REQUEST.into_response(),
-    }
-}
-async fn handle_notifications(State(state): State<AppState>, Json(payload): Json<NotificationPayload>) -> impl IntoResponse {
-    let mut notifs = state.notifications.lock().unwrap();
-    if payload.action == "clear" {
-        notifs.clear();
-        // Cross-talk: Also clear SwayNC on the actual laptop!
-        let _ = Command::new("swaync-client").arg("-C").status();
-    } else if payload.action == "clear_one" {
-        if let Some(id) = payload.id {
-            notifs.retain(|n| n.id != id);
+        Some(value) if value.as_bytes() == expected_header.as_bytes() => {
+            Ok(next.run(req).await)
         }
-    }
-    StatusCode::OK.into_response()
-}
-
-async fn handle_get_layout() -> impl IntoResponse {
-    match get_or_create_config() {
-        Ok(config) => (StatusCode::OK, Json(config)).into_response(),
-        Err(e) => {
-            eprintln!("💥 Config Error: {:?}", e); // Logs to terminal!
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Config error: {}", e)).into_response()
-        }
+        _ => Err(StatusCode::UNAUTHORIZED),
     }
 }
-
-// --- Core Functions ---
-fn get_system_state(notifications: Vec<Notification>) -> Result<SystemState> {
-    let audio_out = String::from_utf8(Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SINK@"]).output()?.stdout)?;
-    let is_muted = audio_out.contains("[MUTED]");
-    let vol_str = audio_out.replace("Volume: ", "").replace("[MUTED]", "").trim().to_string();
-    let volume = (vol_str.parse::<f32>().unwrap_or(0.0) * 100.0) as u32;
-
-    let bright_out = String::from_utf8(Command::new("brightnessctl").arg("-m").output()?.stdout)?;
-    let parts: Vec<&str> = bright_out.split(',').collect();
-    let brightness = parts.get(3).unwrap_or(&"0%").replace("%", "").trim().parse::<u32>().unwrap_or(0);
-
-    let ws_out = String::from_utf8(Command::new("hyprctl").args(["workspaces", "-j"]).output()?.stdout)?;
-    let parsed_ws: serde_json::Value = serde_json::from_str(&ws_out)?;
-    let mut workspaces = Vec::new();
-    if let Some(arr) = parsed_ws.as_array() {
-        for w in arr {
-            if let Some(id) = w.get("id").and_then(|v| v.as_i64()) { workspaces.push(id as i32); }
-        }
-    }
-    workspaces.sort();
-
-    let active_ws_out = String::from_utf8(Command::new("hyprctl").args(["activeworkspace", "-j"]).output()?.stdout)?;
-    let parsed_active: serde_json::Value = serde_json::from_str(&active_ws_out)?;
-    let active_workspace = parsed_active.get("id").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
-
-    let (battery, wifi_ssid, bluetooth_on, bt_device) = get_telemetry();
-
-    Ok(SystemState { 
-        volume, is_muted, brightness, workspaces, active_workspace,
-        battery, wifi_ssid, bluetooth_on, bt_device,
-        notifications
-    })
-}
-
-fn switch_theme(theme_name: &str) -> Result<()> {
-    let script_path = format!("{}/.config/hypr/scripts/switch_theme.sh", std::env::var("HOME")?);
-    Command::new(&script_path).arg(theme_name).status()?; Ok(())
-}
-fn control_media(action: &str) -> Result<()> { Command::new("playerctl").arg(action).status()?; Ok(()) }
-fn control_system(action: &str) -> Result<()> { if action == "lock" { Command::new("hyprlock").status()?; } Ok(()) }
-fn control_workspace(id: i32) -> Result<()> {
-    let lua_dispatcher = format!("hl.dsp.focus({{ workspace = \"{}\" }})", id);
-    let status = Command::new("hyprctl").args(["dispatch", &lua_dispatcher]).status()?;
-    if !status.success() { anyhow::bail!("Hyprland workspace switch failed."); }
-    Ok(())
-}
-
-fn control_audio(action: &str, value: Option<u32>) -> Result<()> {
-    match action {
-        "set" => {
-            if let Some(v) = value {
-                let vol_str = format!("{}%", v);
-                Command::new("wpctl").args(["set-volume", "@DEFAULT_AUDIO_SINK@", &vol_str]).status()?;
-            }
-        },
-        "mute" => { Command::new("wpctl").args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]).status()?; },
-        _ => {}
-    }
-    Ok(())
-}
-
-fn control_bluetooth(action: &str) -> Result<()> {
-    if action == "toggle" {
-        let output = Command::new("bluetoothctl").arg("show").output()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let powered = stdout.lines().find_map(|l| {
-            let l = l.trim();
-            if l.starts_with("Powered:") {
-                Some(l.split(':').nth(1).unwrap_or("").trim().to_lowercase())
-            } else { None }
-        }).unwrap_or_else(|| "no".to_string());
-
-        let turn_on = match powered.as_str() { "yes" | "true" => false, _ => true };
-        let arg = if turn_on { "on" } else { "off" };
-        Command::new("bluetoothctl").arg("power").arg(arg).status()?;
-    }
-    Ok(())
-}
-
-fn control_brightness(action: &str, value: Option<u32>) -> Result<()> {
-    if action == "set" {
-        if let Some(v) = value {
-            let b_str = format!("{}%", v);
-            Command::new("brightnessctl").args(["set", &b_str]).status()?;
-        }
-    }
-    Ok(())
-}
-
-fn get_telemetry() -> (u8, String, bool, String) {
-    let battery = fs::read_to_string("/sys/class/power_supply/BAT0/capacity")
-        .or_else(|_| fs::read_to_string("/sys/class/power_supply/BAT1/capacity"))
-        .unwrap_or_else(|_| "100".to_string())
-        .trim().parse::<u8>().unwrap_or(100);
-
-    let wifi_cmd = Command::new("sh").arg("-c").arg("nmcli -t -f active,ssid dev wifi | grep '^yes' | cut -d':' -f2").output();
-    let wifi_ssid = match wifi_cmd {
-        Ok(out) => {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if s.is_empty() { "Disconnected".to_string() } else { s }
-        },
-        Err(_) => "Unknown".to_string(),
-    };
-
-   let bt_info = Command::new("bluetoothctl").arg("show").output();
-    let bluetooth_on = match bt_info {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).contains("Powered: yes"),
-        Err(_) => false,
-    };
-
-    let bt_devices = Command::new("sh").arg("-c").arg("bluetoothctl devices Connected | cut -d' ' -f3-").output();
-    let bt_device = match bt_devices {
-        Ok(out) => {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if s.is_empty() { "None".to_string() } else { s }
-        },
-        Err(_) => "None".to_string(),
-    };
-
-    (battery, wifi_ssid, bluetooth_on, bt_device)
-}
-
-// ==========================================
-// 🚀 APP LAUNCHER & WOFI ICON ENGINE
-// ==========================================
-
-async fn handle_execute(Json(payload): Json<ExecutePayload>) -> impl IntoResponse {
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg(&payload.command)
-        .spawn();
-    StatusCode::OK.into_response()
-}
-
-// 1. Resolves Wofi icon names to actual system files (Now checks Flatpaks and User dirs!)
-fn resolve_icon_path(icon_name: &str) -> Option<String> {
-    if icon_name.starts_with('/') {
-        return Some(icon_name.to_string());
-    }
-    
-    let mut search_paths = vec![
-        format!("/usr/share/icons/hicolor/scalable/apps/{}.svg", icon_name),
-        format!("/usr/share/icons/hicolor/128x128/apps/{}.png", icon_name),
-        format!("/usr/share/icons/hicolor/64x64/apps/{}.png", icon_name),
-        format!("/usr/share/icons/hicolor/48x48/apps/{}.png", icon_name),
-        format!("/usr/share/icons/hicolor/256x256/apps/{}.png", icon_name),
-        format!("/usr/share/pixmaps/{}.png", icon_name),
-        format!("/usr/share/pixmaps/{}.svg", icon_name),
-        format!("/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps/{}.svg", icon_name),
-        format!("/var/lib/flatpak/exports/share/icons/hicolor/128x128/apps/{}.png", icon_name),
-        format!("/var/lib/flatpak/exports/share/icons/hicolor/64x64/apps/{}.png", icon_name),
-    ];
-
-    if let Ok(home) = std::env::var("HOME") {
-        search_paths.push(format!("{}/.local/share/icons/hicolor/scalable/apps/{}.svg", home, icon_name));
-        search_paths.push(format!("{}/.local/share/icons/hicolor/128x128/apps/{}.png", home, icon_name));
-        search_paths.push(format!("{}/.local/share/icons/hicolor/64x64/apps/{}.png", home, icon_name));
-    }
-    
-    for path in search_paths {
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-// 3. Scans Linux applications (Now checks Flatpaks and User dirs!)
-async fn handle_get_apps() -> Json<Vec<SystemApp>> {
-    let mut apps = Vec::new();
-    
-    let mut dirs = vec![
-        "/usr/share/applications".to_string(),
-        "/var/lib/flatpak/exports/share/applications".to_string(),
-    ];
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(format!("{}/.local/share/applications", home));
-    }
-
-    for dir in dirs {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                if entry.path().extension().and_then(|s| s.to_str()) == Some("desktop") {
-                    if let Ok(content) = fs::read_to_string(entry.path()) {
-                        let mut name = String::new();
-                        let mut exec = String::new();
-                        let mut icon = String::new();
-                        let mut no_display = false;
-
-                        for line in content.lines() {
-                            if line.starts_with("Name=") && name.is_empty() {
-                                name = line["Name=".len()..].to_string();
-                            } else if line.starts_with("Exec=") && exec.is_empty() {
-                                let raw_exec = line["Exec=".len()..].to_string();
-                                exec = raw_exec.split_whitespace().next().unwrap_or("").to_string();
-                            } else if line.starts_with("Icon=") && icon.is_empty() {
-                                icon = line["Icon=".len()..].to_string();
-                            } else if line.starts_with("NoDisplay=true") {
-                                no_display = true;
-                            }
-                        }
-
-                        if !name.is_empty() && !exec.is_empty() && !no_display {
-                            apps.push(SystemApp { name, command: exec, icon });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    apps.sort_by(|a, b| a.name.cmp(&b.name));
-    apps.dedup_by(|a, b| a.name == b.name);
-    
-    Json(apps)
-}
-
-// 2. Serves the raw Linux image to the React frontend
-async fn handle_get_icon(axum::extract::Path(icon_name): axum::extract::Path<String>) -> impl IntoResponse {
-    if let Some(path) = resolve_icon_path(&icon_name) {
-        if let Ok(bytes) = std::fs::read(&path) {
-            let mime = if path.ends_with(".svg") { "image/svg+xml" } else { "image/png" };
-            return (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, mime)],
-                bytes,
-            ).into_response();
-        }
-    }
-    (StatusCode::NOT_FOUND, "Icon not found").into_response()
-}
-
