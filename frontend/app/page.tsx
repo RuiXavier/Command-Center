@@ -15,8 +15,16 @@ import { WorkspaceGrid } from "../components/WorkspaceGrid";
 import { MediaSystemControls } from "../components/MediaSystemControls";
 import { TelemetryBar } from "../components/TelemetryBar";
 import { NotificationFeed } from "../components/NotificationFeed";
+import { AppLauncher } from "../components/AppLauncher";
 
-// NEW: TypeScript interface for the Rust TOML Config
+// Replace your existing ModuleConfig and AppConfig types with this:
+
+interface AppShortcut {
+	name: string;
+	command: string;
+	icon: string;
+}
+
 type ModuleConfig =
 	| { type: "telemetry" }
 	| { type: "notifications" }
@@ -27,7 +35,8 @@ type ModuleConfig =
 			endpoint: "audio" | "brightness";
 			label: string;
 			color: string;
-	  };
+	  }
+	| { type: "app_launcher"; apps: AppShortcut[] }; // NEW: Added App Launcher!
 
 interface AppConfig {
 	general: { theme: string };
@@ -196,10 +205,14 @@ export default function CommandCenter() {
 		);
 	}
 
+	// Separate the Telemetry bar from the rest of the grid so it spans the entire top natively
+	const telemetryModule = appConfig.layout.find((m) => m.type === "telemetry");
+	const masonryModules = appConfig.layout.filter((m) => m.type !== "telemetry");
+
 	return (
-		<main className="min-h-screen bg-[#0a0a0c] bg-[radial-gradient(ellipse_at_top,var(--tw-gradient-stops))] from-slate-900 via-[#0a0a0c] to-black p-6 font-sans pb-24 text-slate-200 selection:bg-blue-500/30">
-			<div className="max-w-md mx-auto space-y-6">
-				<header className="flex justify-between items-center mt-4 mb-4">
+		<main className="min-h-screen bg-[#0a0a0c] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#0a0a0c] to-black p-6 font-sans pb-24 text-slate-200 selection:bg-blue-500/30 overflow-x-hidden">
+			<div className="max-w-6xl mx-auto">
+				<header className="flex justify-between items-center mt-4 mb-8">
 					<div className="flex items-center gap-3">
 						<div className="bg-blue-500/10 p-2 rounded-xl text-blue-400">
 							<MonitorSmartphone size={24} />
@@ -221,63 +234,82 @@ export default function CommandCenter() {
 					</button>
 				</header>
 
-				{/* NEW: THE DYNAMIC RENDER PIPELINE */}
-				{appConfig.layout.map((module, index) => {
-					switch (module.type) {
-						case "telemetry":
-							return <TelemetryBar key={index} sysState={sysState} />;
-						case "notifications":
-							return (
-								<NotificationFeed
-									key={index}
-									sysState={sysState}
-									sendCommand={sendCommand}
-								/>
-							);
-						case "workspaces":
-							return (
-								<WorkspaceGrid
-									key={index}
-									sysState={sysState}
-									sendCommand={sendCommand}
-								/>
-							);
-						case "media_system":
-							return (
-								<MediaSystemControls
-									key={index}
-									sysState={sysState}
-									sendCommand={sendCommand}
-								/>
-							);
-						case "slider":
-							return (
-								<section
-									key={index}
-									className="bg-white/5 backdrop-blur-2xl p-6 rounded-3xl border border-white/10 shadow-2xl">
-									<h2 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-4">
-										{module.label}
-									</h2>
-									<SmoothSlider
-										serverValue={
-											module.endpoint === "audio"
-												? sysState.volume
-												: sysState.brightness
-										}
-										endpoint={module.endpoint}
-										// Pass the raw string from TOML directly!
-										trackColor={module.color}
-										sendCommand={sendCommand}
-										icon={
-											module.endpoint === "audio" ? volumeIcon : brightnessIcon
-										}
-									/>
-								</section>
-							);
-						default:
-							return null;
-					}
-				})}
+				{/* 1. RENDER TELEMETRY AT THE TOP (Full Width) */}
+				{telemetryModule && (
+					<div className="mb-6">
+						<TelemetryBar sysState={sysState} />
+					</div>
+				)}
+
+				{/* 2. THE CSS COLUMNS MASONRY LAYOUT (Zero Gaps!) */}
+				<div className="columns-1 lg:columns-3 gap-6 space-y-6">
+					{masonryModules.map((module, index) => {
+						// The 'break-inside-avoid' class ensures widgets aren't chopped in half across columns!
+						return (
+							<div
+								key={index}
+								className="break-inside-avoid inline-block w-full">
+								{(() => {
+									switch (module.type) {
+										case "app_launcher":
+											return (
+												<AppLauncher
+													apps={module.apps}
+													sendCommand={sendCommand}
+												/>
+											);
+										case "notifications":
+											return (
+												<NotificationFeed
+													sysState={sysState}
+													sendCommand={sendCommand}
+												/>
+											);
+										case "workspaces":
+											return (
+												<WorkspaceGrid
+													sysState={sysState}
+													sendCommand={sendCommand}
+												/>
+											);
+										case "media_system":
+											return (
+												<MediaSystemControls
+													sysState={sysState}
+													sendCommand={sendCommand}
+												/>
+											);
+										case "slider":
+											return (
+												<section className="bg-white/5 backdrop-blur-2xl p-6 rounded-3xl border border-white/10 shadow-2xl">
+													<h2 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-4">
+														{module.label}
+													</h2>
+													<SmoothSlider
+														serverValue={
+															module.endpoint === "audio"
+																? sysState.volume
+																: sysState.brightness
+														}
+														endpoint={module.endpoint}
+														trackColor={module.color}
+														sendCommand={sendCommand}
+														icon={
+															module.endpoint === "audio"
+																? volumeIcon
+																: brightnessIcon
+														}
+													/>
+												</section>
+											);
+										default:
+											return null;
+									}
+								})()}
+							</div>
+						);
+					})}
+				</div>
 			</div>
 		</main>
 	);

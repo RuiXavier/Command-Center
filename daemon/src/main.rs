@@ -32,6 +32,8 @@ enum Commands {
     Pair,
 }
 
+
+
 // --- NEW: Added Notifications Array to AppState ---
 #[derive(Clone)] 
 struct AppState { 
@@ -71,16 +73,30 @@ struct SystemState {
     notifications: Vec<Notification>, // Sent to React
 }
 
-// --- NEW CONFIGURATION SCHEMA ---
+// In your ModuleConfig enum, add the AppLauncher:
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ModuleConfig {
-    Telemetry {},      // <-- Added {}
-    Notifications {},  // <-- Added {}
-    Workspaces {},     // <-- Added {}
-    MediaSystem {},    // <-- Added {}
+    Telemetry {},
+    Notifications {},
+    Workspaces {},
+    MediaSystem {},
     Slider { endpoint: String, label: String, color: String },
+    // NEW: App Launcher
+    AppLauncher { apps: Vec<AppShortcut> }, 
 }
+
+// Add this struct right below it to define individual apps
+#[derive(Serialize, Deserialize, Clone)]
+struct AppShortcut {
+    name: String,
+    command: String,
+    icon: String, // e.g., "terminal", "browser", "code"
+}
+
+// Add this payload struct near your others
+#[derive(Deserialize)] 
+struct ExecutePayload { command: String }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct GeneralConfig {
@@ -91,6 +107,13 @@ struct GeneralConfig {
 struct AppConfig {
     general: GeneralConfig,
     layout: Vec<ModuleConfig>,
+}
+
+#[derive(Serialize)]
+struct SystemApp {
+    name: String,
+    command: String,
+    icon: String,
 }
 
 // Read or generate the default config.toml
@@ -228,7 +251,8 @@ async fn main() -> Result<()> {
                 .allow_methods(vec![Method::GET, Method::POST])
                 .allow_headers(Any);
 
-            let app = Router::new()
+            // 1. Lock down all control routes with the security token
+            let auth_routes = Router::new()
                 .route("/api/state", get(handle_get_state))
                 .route("/api/layout", get(handle_get_layout))
                 .route("/api/theme", post(handle_theme))
@@ -239,15 +263,20 @@ async fn main() -> Result<()> {
                 .route("/api/workspace", post(handle_workspace))
                 .route("/api/bluetooth", post(handle_bluetooth))
                 .route("/api/notifications", post(handle_notifications))
-                .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+                .route("/api/execute", post(handle_execute))
+                .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+            // 2. Make the images and app list public to the local network so the browser can load them
+            let app = Router::new()
+                .merge(auth_routes)
+                .route("/api/apps", get(handle_get_apps))
+                .route("/api/icon/{name}", get(handle_get_icon))
                 .layer(cors)
-                // NEW: Serve the Next.js static export
                 .fallback_service(
                     ServeDir::new("../frontend/out")
                         .fallback(ServeFile::new("../frontend/out/index.html"))
                 )
                 .with_state(state);
-
             let addr = format!("0.0.0.0:{}", port);
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             println!("🚀 Command Center Daemon running on http://{}", addr);
@@ -478,3 +507,114 @@ fn get_telemetry() -> (u8, String, bool, String) {
 
     (battery, wifi_ssid, bluetooth_on, bt_device)
 }
+
+// ==========================================
+// 🚀 APP LAUNCHER & WOFI ICON ENGINE
+// ==========================================
+
+async fn handle_execute(Json(payload): Json<ExecutePayload>) -> impl IntoResponse {
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(&payload.command)
+        .spawn();
+    StatusCode::OK.into_response()
+}
+
+// 1. Resolves Wofi icon names to actual system files (Now checks Flatpaks and User dirs!)
+fn resolve_icon_path(icon_name: &str) -> Option<String> {
+    if icon_name.starts_with('/') {
+        return Some(icon_name.to_string());
+    }
+    
+    let mut search_paths = vec![
+        format!("/usr/share/icons/hicolor/scalable/apps/{}.svg", icon_name),
+        format!("/usr/share/icons/hicolor/128x128/apps/{}.png", icon_name),
+        format!("/usr/share/icons/hicolor/64x64/apps/{}.png", icon_name),
+        format!("/usr/share/icons/hicolor/48x48/apps/{}.png", icon_name),
+        format!("/usr/share/icons/hicolor/256x256/apps/{}.png", icon_name),
+        format!("/usr/share/pixmaps/{}.png", icon_name),
+        format!("/usr/share/pixmaps/{}.svg", icon_name),
+        format!("/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps/{}.svg", icon_name),
+        format!("/var/lib/flatpak/exports/share/icons/hicolor/128x128/apps/{}.png", icon_name),
+        format!("/var/lib/flatpak/exports/share/icons/hicolor/64x64/apps/{}.png", icon_name),
+    ];
+
+    if let Ok(home) = std::env::var("HOME") {
+        search_paths.push(format!("{}/.local/share/icons/hicolor/scalable/apps/{}.svg", home, icon_name));
+        search_paths.push(format!("{}/.local/share/icons/hicolor/128x128/apps/{}.png", home, icon_name));
+        search_paths.push(format!("{}/.local/share/icons/hicolor/64x64/apps/{}.png", home, icon_name));
+    }
+    
+    for path in search_paths {
+        if std::path::Path::new(&path).exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+// 3. Scans Linux applications (Now checks Flatpaks and User dirs!)
+async fn handle_get_apps() -> Json<Vec<SystemApp>> {
+    let mut apps = Vec::new();
+    
+    let mut dirs = vec![
+        "/usr/share/applications".to_string(),
+        "/var/lib/flatpak/exports/share/applications".to_string(),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(format!("{}/.local/share/applications", home));
+    }
+
+    for dir in dirs {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|s| s.to_str()) == Some("desktop") {
+                    if let Ok(content) = fs::read_to_string(entry.path()) {
+                        let mut name = String::new();
+                        let mut exec = String::new();
+                        let mut icon = String::new();
+                        let mut no_display = false;
+
+                        for line in content.lines() {
+                            if line.starts_with("Name=") && name.is_empty() {
+                                name = line["Name=".len()..].to_string();
+                            } else if line.starts_with("Exec=") && exec.is_empty() {
+                                let raw_exec = line["Exec=".len()..].to_string();
+                                exec = raw_exec.split_whitespace().next().unwrap_or("").to_string();
+                            } else if line.starts_with("Icon=") && icon.is_empty() {
+                                icon = line["Icon=".len()..].to_string();
+                            } else if line.starts_with("NoDisplay=true") {
+                                no_display = true;
+                            }
+                        }
+
+                        if !name.is_empty() && !exec.is_empty() && !no_display {
+                            apps.push(SystemApp { name, command: exec, icon });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    apps.sort_by(|a, b| a.name.cmp(&b.name));
+    apps.dedup_by(|a, b| a.name == b.name);
+    
+    Json(apps)
+}
+
+// 2. Serves the raw Linux image to the React frontend
+async fn handle_get_icon(axum::extract::Path(icon_name): axum::extract::Path<String>) -> impl IntoResponse {
+    if let Some(path) = resolve_icon_path(&icon_name) {
+        if let Ok(bytes) = std::fs::read(&path) {
+            let mime = if path.ends_with(".svg") { "image/svg+xml" } else { "image/png" };
+            return (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, mime)],
+                bytes,
+            ).into_response();
+        }
+    }
+    (StatusCode::NOT_FOUND, "Icon not found").into_response()
+}
+
