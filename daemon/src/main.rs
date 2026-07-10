@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
             system::switch_theme(name)?;
         }
         Commands::Media { action } => {
-            system::control_media(action)?;
+            system::control_media(action, None)?;
         }
         Commands::Pair => {
             let token = get_current_token().context("⚠️ Daemon is not running!")?;
@@ -179,6 +179,8 @@ async fn main() -> Result<()> {
                 .merge(auth_routes)
                 .route("/api/apps", get(handle_get_apps))
                 .route("/api/icon/{name}", get(handle_get_icon))
+                .route("/api/media/current", get(handle_get_media_metadata))
+                .route("/api/media/art", get(handle_media_art))
                 .layer(cors)
                 .fallback_service(
                     ServeDir::new("../frontend/out")

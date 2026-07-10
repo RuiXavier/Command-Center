@@ -20,6 +20,7 @@ pub struct ThemePayload {
 #[derive(Deserialize)]
 pub struct MediaPayload {
     pub action: String,
+    pub player: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -117,4 +118,18 @@ pub struct SystemApp {
     pub name: String,
     pub command: String,
     pub icon: String,
+}
+
+#[derive(Serialize)]
+pub struct MediaMetadata {
+    pub player_name: String,
+    pub title: String,
+    pub artist: String,
+    pub art_url: String,
+    pub status: String,
+}
+
+#[derive(Deserialize)]
+pub struct ArtQuery {
+    pub url: String,
 }

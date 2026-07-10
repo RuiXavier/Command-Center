@@ -1,114 +1,183 @@
 "use client";
 
-import { vibrate, SystemState } from "../lib/utils";
+import { useState, useEffect } from "react";
 import {
-	SkipBack,
 	Play,
+	Pause,
+	SkipBack,
 	SkipForward,
-	Moon,
-	Sun,
-	Lock,
-	Bluetooth,
-	BluetoothOff,
+	Music,
+	Clapperboard,
 } from "lucide-react";
+import { vibrate } from "../lib/utils";
+
+interface MediaMetadata {
+	player_name: string;
+	title: string;
+	artist: string;
+	art_url: string;
+	status: string;
+}
 
 export function MediaSystemControls({
-	sysState,
 	sendCommand,
 }: {
-	sysState: SystemState;
+	sysState?: any;
 	sendCommand: (ep: string, payload: Record<string, unknown>) => void;
 }) {
+	const [mediaList, setMediaList] = useState<MediaMetadata[]>([]);
+	const [activeIndex, setActiveIndex] = useState(0);
+
+	useEffect(() => {
+		const fetchMeta = async () => {
+			try {
+				const res = await fetch(
+					`http://${window.location.hostname}:4000/api/media/current`,
+				);
+				if (res.ok) {
+					const data: MediaMetadata[] = await res.json();
+					setMediaList(data);
+					// Auto-adjust index if a player is closed
+					if (activeIndex >= data.length)
+						setActiveIndex(Math.max(0, data.length - 1));
+				}
+			} catch (e) {}
+		};
+
+		fetchMeta();
+		const interval = setInterval(fetchMeta, 1500);
+		return () => clearInterval(interval);
+	}, [activeIndex]);
+
+	const currentMeta = mediaList[activeIndex] || null;
+
+	if (!currentMeta) {
+		return (
+			<section className="bg-white/5 backdrop-blur-2xl p-5 rounded-3xl border border-white/10 shadow-2xl h-full flex flex-col items-center justify-center min-h-[280px]">
+				<Music size={32} className="text-white/20 mb-3" />
+				<div className="text-sm font-bold text-slate-500">No Media Playing</div>
+			</section>
+		);
+	}
+
+	const isPlaying = currentMeta.status.toLowerCase() === "playing";
+	const artProxyUrl = currentMeta.art_url
+		? `http://${window.location.hostname}:4000/api/media/art?url=${encodeURIComponent(currentMeta.art_url)}`
+		: "";
+
+	// DETECTION: Check if Stremio/MPV is the active player
+	const isStremio =
+		currentMeta.player_name.toLowerCase().includes("mpv") ||
+		currentMeta.player_name.toLowerCase().includes("stremio");
+
+	// Control function that targets the specific player
+	const handleControl = (action: string) => {
+		vibrate(30);
+		sendCommand("media", { action, player: currentMeta.player_name });
+	};
+
 	return (
-		<div className="grid grid-cols-2 gap-4">
-			{/* Media Player */}
-			<section className="bg-white/5 backdrop-blur-2xl p-5 rounded-3xl border border-white/10 shadow-2xl flex flex-col justify-center">
-				<h2 className="text-slate-400 mb-4 text-xs font-bold uppercase tracking-widest text-center">
-					Media
-				</h2>
-				<div className="flex justify-between items-center gap-2">
-					<button
-						onClick={() => {
-							vibrate(30);
-							sendCommand("media", { action: "previous" });
-						}}
-						className="flex-1 bg-white/5 text-white hover:bg-white/10 h-14 rounded-2xl flex items-center justify-center active:scale-90 transition-all">
-						<SkipBack size={20} fill="currentColor" />
-					</button>
-					<button
-						onClick={() => {
-							vibrate(50);
-							sendCommand("media", { action: "play-pause" });
-						}}
-						className="flex-[1.2] bg-white text-black h-16 rounded-2xl flex items-center justify-center active:scale-90 transition-all shadow-[0_0_20px_rgba(255,255,255,0.2)]">
-						<Play size={24} fill="currentColor" />
-					</button>
-					<button
-						onClick={() => {
-							vibrate(30);
-							sendCommand("media", { action: "next" });
-						}}
-						className="flex-1 bg-white/5 text-white hover:bg-white/10 h-14 rounded-2xl flex items-center justify-center active:scale-90 transition-all">
-						<SkipForward size={20} fill="currentColor" />
-					</button>
-				</div>
-			</section>
+		<section
+			className={`relative overflow-hidden p-5 rounded-3xl border shadow-2xl h-full flex flex-col group transition-all min-h-[280px] ${
+				isStremio
+					? "bg-purple-900/20 border-purple-500/30"
+					: "bg-white/5 border-white/10"
+			} backdrop-blur-2xl`}>
+			{/* 1. Ambient Background */}
+			{artProxyUrl && (
+				<>
+					<div
+						className={`absolute inset-0 bg-cover bg-center opacity-30 group-hover:opacity-40 transition-opacity duration-700 blur-2xl ${isStremio ? "saturate-200" : "saturate-150"}`}
+						style={{ backgroundImage: `url(${artProxyUrl})` }}
+					/>
+					<div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0c]/95 via-[#0a0a0c]/50 to-transparent" />
+				</>
+			)}
 
-			{/* System Toggles */}
-			<section className="bg-white/5 backdrop-blur-2xl p-5 rounded-3xl border border-white/10 shadow-2xl flex flex-col justify-between">
-				<h2 className="text-slate-400 mb-3 text-xs font-bold uppercase tracking-widest text-center">
-					System
-				</h2>
-
-				<div className="grid grid-cols-2 gap-2 mb-2">
-					<button
-						onClick={() => {
-							vibrate();
-							sendCommand("theme", { name: "dark" });
-						}}
-						className="bg-slate-800 text-white h-10 rounded-xl flex items-center justify-center active:scale-90 transition-all shadow-inner">
-						<Moon size={16} />
-					</button>
-					<button
-						onClick={() => {
-							vibrate();
-							sendCommand("theme", { name: "light" });
-						}}
-						className="bg-slate-200 text-slate-900 h-10 rounded-xl flex items-center justify-center active:scale-90 transition-all shadow-inner">
-						<Sun size={16} />
-					</button>
-				</div>
-
-				{/* NEW: Prominent Bluetooth Button */}
-				<button
-					onClick={() => {
-						vibrate(40);
-						sendCommand("bluetooth", { action: "toggle" });
-					}}
-					className={`mb-2 w-full h-10 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95 border ${
-						sysState.bluetooth_on
-							? "bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/20"
-							: "bg-black/20 text-slate-400 border-white/5 hover:bg-black/40"
-					}`}>
-					{sysState.bluetooth_on ? (
-						<Bluetooth size={14} />
+			{/* 2. Header & Multi-Player Tabs */}
+			<div className="relative z-10 flex justify-between items-center mb-4 shrink-0">
+				<h2
+					className={`text-xs font-bold uppercase tracking-widest flex items-center gap-2 drop-shadow-md ${isStremio ? "text-purple-300" : "text-slate-400"}`}>
+					{isStremio ? (
+						<Clapperboard size={14} className="text-purple-400" />
 					) : (
-						<BluetoothOff size={14} />
+						<Music size={14} className="text-emerald-400" />
 					)}
-					<span className="truncate max-w-[100px]">
-						{sysState.bluetooth_on ? sysState.bt_device : "Bluetooth Off"}
-					</span>
+					{isStremio ? "Stremio" : currentMeta.player_name.split(".")[0]}
+				</h2>
+
+				{/* Pagination Dots for Multiple Players */}
+				{mediaList.length > 1 && (
+					<div className="flex gap-1.5">
+						{mediaList.map((_, i) => (
+							<button
+								key={i}
+								onClick={() => {
+									vibrate(10);
+									setActiveIndex(i);
+								}}
+								className={`w-2 h-2 rounded-full transition-all ${i === activeIndex ? (isStremio ? "bg-purple-400 w-4" : "bg-emerald-400 w-4") : "bg-white/20"}`}
+							/>
+						))}
+					</div>
+				)}
+			</div>
+
+			{/* 3. Banner Image */}
+			{artProxyUrl && (
+				<div
+					className={`relative z-10 w-full h-32 mb-5 rounded-xl overflow-hidden shadow-lg border shrink-0 bg-black/40 ${isStremio ? "border-purple-500/20 shadow-purple-900/20" : "border-white/10"}`}>
+					<img
+						src={artProxyUrl}
+						alt="Media Art"
+						className="w-full h-full object-cover"
+						onError={(e) => {
+							(e.target as HTMLImageElement).style.display = "none";
+						}}
+					/>
+					<div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-transparent via-black/10 to-black/60 mix-blend-overlay"></div>
+				</div>
+			)}
+
+			{/* 4. Track Info */}
+			<div className="relative z-10 flex flex-col items-center text-center gap-1 mb-5 mt-auto w-full px-2">
+				<div
+					className={`font-bold truncate w-full drop-shadow-md ${isStremio ? "text-lg text-white" : "text-base text-slate-100"}`}>
+					{currentMeta.title}
+				</div>
+
+				{/* Hide Artist in Stremio Mode (since it's usually empty or a generic string) */}
+				{!isStremio && (
+					<div className="text-xs font-bold text-slate-400 truncate w-full uppercase tracking-wider drop-shadow-md">
+						{currentMeta.artist || "Unknown Artist"}
+					</div>
+				)}
+			</div>
+
+			{/* 5. Playback Controls */}
+			<div className="relative z-10 flex items-center justify-center gap-5 shrink-0 pb-1">
+				<button
+					onClick={() => handleControl("previous")}
+					className="p-3 rounded-full bg-white/5 hover:bg-white/20 text-slate-200 transition-all active:scale-95 backdrop-blur-md">
+					<SkipBack size={18} className="fill-current" />
 				</button>
 
 				<button
-					onClick={() => {
-						vibrate([50, 50, 50]);
-						sendCommand("system", { action: "lock" });
-					}}
-					className="w-full bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 h-10 rounded-xl text-xs font-bold uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-2">
-					<Lock size={14} /> Lock
+					onClick={() => handleControl("play-pause")}
+					className={`p-4 rounded-full text-slate-900 transition-all shadow-xl active:scale-95 ${isStremio ? "bg-purple-400 hover:bg-purple-300 shadow-purple-900/50" : "bg-slate-100 hover:bg-white shadow-black/50"}`}>
+					{isPlaying ? (
+						<Pause size={20} className="fill-current" />
+					) : (
+						<Play size={20} className="fill-current ml-1" />
+					)}
 				</button>
-			</section>
-		</div>
+
+				<button
+					onClick={() => handleControl("next")}
+					className="p-3 rounded-full bg-white/5 hover:bg-white/20 text-slate-200 transition-all active:scale-95 backdrop-blur-md">
+					<SkipForward size={18} className="fill-current" />
+				</button>
+			</div>
+		</section>
 	);
 }

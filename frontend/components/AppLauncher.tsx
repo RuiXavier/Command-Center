@@ -96,7 +96,10 @@ export function AppLauncher({
 	};
 
 	const filteredApps = useMemo(() => {
-		// Merge pinned TOML apps with the full system list, avoiding duplicates
+		// 1. If there is no search query, ONLY return the pinned TOML apps
+		if (!query) return tomlApps || [];
+
+		// 2. If the user is searching, merge everything together to search through
 		const allApps = [...(tomlApps || [])];
 		const pinnedNames = new Set(allApps.map((a) => a.name.toLowerCase()));
 
@@ -106,7 +109,6 @@ export function AppLauncher({
 			}
 		});
 
-		if (!query) return allApps;
 		const q = query.toLowerCase();
 		return allApps.filter(
 			(a) =>

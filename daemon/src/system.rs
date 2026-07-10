@@ -122,8 +122,12 @@ pub fn switch_theme(theme_name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn control_media(action: &str) -> Result<()> {
-    Command::new("playerctl").arg(action).status()?;
+pub fn control_media(action: &str, player: Option<String>) -> Result<()> {
+    let mut cmd = Command::new("playerctl");
+    if let Some(p) = player {
+        cmd.args(["-p", &p]); // Target the specific app!
+    }
+    cmd.arg(action).status()?;
     Ok(())
 }
 
@@ -300,4 +304,61 @@ pub fn resolve_icon_path(icon_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+pub async fn get_media_metadata() -> Result<Vec<MediaMetadata>> {
+    let mut media_list = Vec::new();
+    
+    // 1. Get standard MPRIS players (Brave, Spotify, etc.) using tokio
+    let output = tokio::process::Command::new("playerctl").arg("-l").output().await?;
+    let players = String::from_utf8_lossy(&output.stdout);
+    
+    for player in players.lines() {
+        let player = player.trim();
+        if player.is_empty() { continue; }
+        
+        let meta_out = tokio::process::Command::new("playerctl")
+            .args(["-p", player, "metadata", "--format", "{{title}}|~|{{artist}}|~|{{mpris:artUrl}}|~|{{status}}"])
+            .output().await;
+            
+        // Removed the stray .unwrap() here!
+        if let Ok(out) = meta_out {
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if stdout.is_empty() { continue; }
+            
+            let parts: Vec<&str> = stdout.split("|~|").collect();
+            let title = parts.get(0).unwrap_or(&"").trim().to_string();
+            let status = parts.get(3).unwrap_or(&"Stopped").trim().to_string();
+            
+            if !title.is_empty() || status == "Playing" || status == "Paused" {
+                media_list.push(MediaMetadata {
+                    player_name: player.to_string(),
+                    title: if title.is_empty() { "Unknown Media".to_string() } else { title },
+                    artist: parts.get(1).unwrap_or(&"Unknown").trim().to_string(),
+                    art_url: parts.get(2).unwrap_or(&"").trim().to_string(),
+                    status,
+                });
+            }
+        }
+    }
+
+    // 2. Custom Stremio Local Engine Poller
+    let client = reqwest::Client::new();
+    if let Ok(res) = client.get("http://127.0.0.1:11470/stats.json").timeout(std::time::Duration::from_millis(500)).send().await {
+        if let Ok(stats) = res.json::<serde_json::Value>().await {
+            if let Some(stream_name) = stats.get("streamName").and_then(|s| s.as_str()) {
+                let speed = stats.get("speed").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                
+                media_list.push(MediaMetadata {
+                    player_name: "Stremio Native".to_string(),
+                    title: stream_name.to_string(),
+                    artist: "Local Engine".to_string(),
+                    art_url: "".to_string(), 
+                    status: if speed > 1024.0 { "Playing".to_string() } else { "Paused".to_string() },
+                });
+            }
+        }
+    }
+    
+    Ok(media_list)
 }

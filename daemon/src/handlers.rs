@@ -29,7 +29,7 @@ pub async fn handle_theme(Json(payload): Json<ThemePayload>) -> impl IntoRespons
 }
 
 pub async fn handle_media(Json(payload): Json<MediaPayload>) -> impl IntoResponse {
-    match control_media(&payload.action) {
+    match control_media(&payload.action, payload.player) {
         Ok(_) => StatusCode::OK.into_response(),
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
     }
@@ -183,3 +183,58 @@ pub async fn handle_get_icon(
     let empty_svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"></svg>";
     (StatusCode::OK, [(header::CONTENT_TYPE, "image/svg+xml")], empty_svg.as_bytes()).into_response()
 }
+
+pub async fn handle_get_media_metadata() -> impl IntoResponse {
+    // Add .await here:
+    match get_media_metadata().await {
+        Ok(metadata) => (StatusCode::OK, Json(metadata)).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read media metadata",
+        )
+            .into_response(),
+    }
+}
+
+
+// Add `Query` to your axum::extract import at the top:
+// use axum::extract::{Path, State, Query};
+
+pub async fn handle_media_art(
+    axum::extract::Query(query): axum::extract::Query<ArtQuery>,
+) -> impl IntoResponse {
+    let url = query.url;
+
+    if url.starts_with("file://") {
+        // Strip the file URI and do a basic decode for spaces
+        let path = url.trim_start_matches("file://").replace("%20", " ");
+
+        if let Ok(bytes) = std::fs::read(&path) {
+            let mime = if path.to_lowercase().ends_with(".png") {
+                "image/png"
+            } else if path.to_lowercase().ends_with(".svg") {
+                "image/svg+xml"
+            } else {
+                "image/jpeg"
+            };
+            return (StatusCode::OK, [(header::CONTENT_TYPE, mime)], bytes).into_response();
+        }
+    } else if url.starts_with("http") {
+        // If the player passed a direct web URL (like some Spotify clients do), 
+        // just redirect the browser to it directly.
+        return (
+            StatusCode::FOUND,
+            [(header::LOCATION, url)],
+        ).into_response();
+    }
+
+    // Invisible pixel fallback if the art doesn't exist
+    let empty_svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"></svg>";
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        empty_svg.as_bytes(),
+    )
+        .into_response()
+}
+
